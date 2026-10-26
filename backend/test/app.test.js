@@ -1,5 +1,5 @@
-const { test } = require('node:test');
-const assert = require('node:assert');
+const { after, test } = require('node:test');
+const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
@@ -13,19 +13,37 @@ process.env.DMS_MAX_FILE_SIZE_BYTES = '64';
 
 const app = require('../src/app');
 
-test('o app backend é exportado', () => {
-  assert.ok(app, 'o app deve estar definido');
-  assert.strictEqual(typeof app, 'function', 'o app Express deve ser uma função');
+after(async () => {
+  await fs.rm(storageDirectory, { recursive: true, force: true });
 });
 
-test('rotas permitem upload, listagem e download e rejeitam arquivos inválidos', async () => {
+async function withServer(run) {
   const server = app.listen(0);
   await once(server, 'listening');
 
   try {
     const address = server.address();
-    const baseUrl = `http://127.0.0.1:${address.port}`;
+    await run(`http://127.0.0.1:${address.port}`);
+  } finally {
+    await new Promise((resolve, reject) => {
+      server.close((error) => (error ? reject(error) : resolve()));
+    });
+  }
+}
 
+async function uploadFile(baseUrl, filename, content) {
+  const form = new FormData();
+  form.append('file', new Blob([content], { type: 'text/plain' }), filename);
+  return fetch(`${baseUrl}/upload`, { method: 'POST', body: form });
+}
+
+test('o app backend é exportado', () => {
+  assert.ok(app, 'o app deve estar definido');
+  assert.strictEqual(typeof app, 'function', 'o app Express deve ser uma função');
+});
+
+test('POST /upload aceita arquivo e rejeita requisições inválidas', async () => {
+  await withServer(async (baseUrl) => {
     const missingFile = await fetch(`${baseUrl}/upload`, {
       method: 'POST',
       body: new FormData(),
@@ -51,12 +69,7 @@ test('rotas permitem upload, listagem e download e rejeitam arquivos inválidos'
     assert.equal(oversizedFile.status, 413);
     assert.equal((await oversizedFile.json()).error.code, 'FILE_TOO_LARGE');
 
-    const uploadForm = new FormData();
-    uploadForm.append('file', new Blob(['document body'], { type: 'text/plain' }), 'notes.txt');
-    const upload = await fetch(`${baseUrl}/upload`, {
-      method: 'POST',
-      body: uploadForm,
-    });
+    const upload = await uploadFile(baseUrl, 'notes.txt', 'document body');
     assert.equal(upload.status, 201);
 
     const { document } = await upload.json();
@@ -68,24 +81,36 @@ test('rotas permitem upload, listagem e download e rejeitam arquivos inválidos'
     assert.ok(document.uploadedAt);
     assert.equal(Object.hasOwn(document, 'storageKey'), false);
 
+    assert.equal((await fs.readdir(storageDirectory)).length, 1);
+  });
+});
+
+test('GET /documents lista os metadados dos documentos enviados', async () => {
+  await withServer(async (baseUrl) => {
+    const upload = await uploadFile(baseUrl, 'listed.txt', 'list me');
+    assert.equal(upload.status, 201);
+    const { document } = await upload.json();
+
     const list = await fetch(`${baseUrl}/documents`);
     assert.equal(list.status, 200);
-    assert.deepEqual((await list.json()).documents, [document]);
+    const { documents } = await list.json();
+    assert.ok(documents.some((listedDocument) => listedDocument.id === document.id));
+  });
+});
+
+test('GET /documents/:id/download retorna o arquivo e 404 para ID inexistente', async () => {
+  await withServer(async (baseUrl) => {
+    const upload = await uploadFile(baseUrl, 'download.txt', 'download body');
+    assert.equal(upload.status, 201);
+    const { document } = await upload.json();
 
     const download = await fetch(`${baseUrl}/documents/${document.id}/download`);
     assert.equal(download.status, 200);
-    assert.equal(await download.text(), 'document body');
+    assert.equal(await download.text(), 'download body');
     assert.match(download.headers.get('content-disposition'), /attachment/);
 
     const missingDocument = await fetch(`${baseUrl}/documents/unknown/download`);
     assert.equal(missingDocument.status, 404);
     assert.equal((await missingDocument.json()).error.code, 'DOCUMENT_NOT_FOUND');
-
-    assert.equal((await fs.readdir(storageDirectory)).length, 1);
-  } finally {
-    await new Promise((resolve, reject) => {
-      server.close((error) => (error ? reject(error) : resolve()));
-    });
-    await fs.rm(storageDirectory, { recursive: true, force: true });
-  }
+  });
 });
