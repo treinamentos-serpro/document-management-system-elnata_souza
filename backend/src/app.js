@@ -1,26 +1,56 @@
-// Seed do servidor backend do Document Management System.
-//
-// Este arquivo é apenas um ponto de partida mínimo. Ao longo do workshop você
-// vai usar o Agent Mode do GitHub Copilot para construir as camadas:
-//   - routes/       (definição das rotas)
-//   - controllers/  (entrada HTTP e validação)
-//   - services/     (regras de negócio)
-//   - repositories/ (persistência: arquivos locais + metadados em memória)
-//
-// Restrição do projeto: uploads são gravados no filesystem local da aplicação
-// usando multer com diskStorage. Não utilize provedores externos.
-
 const express = require('express');
+const multer = require('multer');
+const documentRoutes = require('./routes/document.routes');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+const ERROR_RESPONSES = {
+  FILE_REQUIRED: { status: 400, message: 'Envie um arquivo no campo file.' },
+  EMPTY_FILE: { status: 400, message: 'O arquivo enviado está vazio.' },
+  DOCUMENT_NOT_FOUND: { status: 404, message: 'Documento não encontrado.' },
+  STORAGE_ERROR: { status: 500, message: 'Não foi possível acessar o armazenamento local.' },
+  INTERNAL_ERROR: { status: 500, message: 'Ocorreu um erro interno.' },
+};
+
 app.use(express.json());
 
-// Endpoint de verificação de saúde. As demais rotas (/upload, /documents,
-// /documents/:id/download) serão implementadas durante o Passo 2.
 app.get('/health', (req, res) => {
   res.json({ status: 'ok' });
+});
+
+app.use('/', documentRoutes);
+
+app.use((error, request, response, next) => {
+  if (response.headersSent) {
+    next(error);
+    return;
+  }
+
+  let errorCode = error.dmsCode;
+  if (error instanceof multer.MulterError) {
+    errorCode = error.code === 'LIMIT_FILE_SIZE' ? 'FILE_TOO_LARGE' : 'INVALID_UPLOAD';
+  }
+
+  if (errorCode === 'FILE_TOO_LARGE') {
+    response.status(413).json({
+      error: { code: errorCode, message: 'O arquivo excede o tamanho máximo permitido.' },
+    });
+    return;
+  }
+
+  if (errorCode === 'INVALID_UPLOAD') {
+    response.status(400).json({
+      error: { code: errorCode, message: 'A requisição de upload é inválida.' },
+    });
+    return;
+  }
+
+  const errorResponse = ERROR_RESPONSES[errorCode] || ERROR_RESPONSES.INTERNAL_ERROR;
+  const responseCode = ERROR_RESPONSES[errorCode] ? errorCode : 'INTERNAL_ERROR';
+  response.status(errorResponse.status).json({
+    error: { code: responseCode, message: errorResponse.message },
+  });
 });
 
 if (require.main === module) {
