@@ -11,7 +11,7 @@ function formatDate(value) {
     timeStyle: 'short',
   }).format(date);
 }
-
+// Component to display a list of documents
 export default function DocumentList({ documents, error, isLoading, onDownloadError, onRetry }) {
   if (isLoading) {
     return <p className="list-message" role="status">Carregando documentos...</p>;
