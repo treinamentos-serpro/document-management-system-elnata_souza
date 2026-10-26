@@ -2,6 +2,7 @@ const { randomUUID } = require('node:crypto');
 const { defaultOwner } = require('../config');
 const documentRepository = require('../repositories/document.repository');
 const fileRepository = require('../repositories/file.repository');
+const { toPublicDocument } = require('./document.mapper');
 
 function createDocumentError(code) {
   const error = new Error(code);
@@ -9,9 +10,12 @@ function createDocumentError(code) {
   return error;
 }
 
-function toPublicDocument(document) {
-  const { storageKey, ...publicDocument } = document;
-  return publicDocument;
+async function removeUploadedFile(file) {
+  try {
+    await fileRepository.remove(file.filename);
+  } catch {
+    // A limpeza e best-effort e nao deve substituir o erro original.
+  }
 }
 
 async function createDocument(file) {
@@ -20,7 +24,7 @@ async function createDocument(file) {
   }
 
   if (file.size === 0) {
-    await fileRepository.remove(file.filename).catch(() => {});
+    await removeUploadedFile(file);
     throw createDocumentError('EMPTY_FILE');
   }
 
@@ -37,7 +41,7 @@ async function createDocument(file) {
   try {
     await documentRepository.save(document);
   } catch (error) {
-    await fileRepository.remove(file.filename).catch(() => {});
+    await removeUploadedFile(file);
     throw createDocumentError('INTERNAL_ERROR');
   }
 
